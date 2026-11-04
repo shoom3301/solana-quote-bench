@@ -1,0 +1,11 @@
+{
+  "setupTasks": [],
+  "tasks": {
+    "start": {
+      "name": "Quote bench",
+      "command": "node server.mjs",
+      "runAtStart": true,
+      "preview": { "port": 5178 }
+    }
+  }
+}

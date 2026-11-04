@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Solana Quote Bench</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #616a76; --line: #e3e6eb;
+    --good: #12805c; --bad: #c2410c; --accent: #2b59c3; --chip: #eef2fb; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8ebf0; --muted: #98a2b0; --line: #2a3039;
+      --good: #34d399; --bad: #fb923c; --accent: #7aa2ff; --chip: #1e2633;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-width: 0; }
+  input.mono { font-family: var(--mono); font-size: 12px; }
+  .wide { grid-column: span 2; }
+  button { background: var(--accent); color: #fff; border: 0; cursor: pointer; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .card h3 { margin: 0; font-size: 14px; }
+  .card .sub { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .big { font-family: var(--mono); font-size: 26px; margin: 10px 0 2px; }
+  .delta { font-family: var(--mono); font-size: 13px; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 11px; color: var(--accent); }
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; }
+  thead th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.num { font-family: var(--mono); }
+  tr.hl td { background: var(--chip); font-weight: 600; }
+  .note { color: var(--muted); font-size: 12px; }
+  ol.explain li { margin: 0 0 10px; }
+  .err { color: var(--bad); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+  details summary { cursor: pointer; color: var(--accent); }
+  pre { font-family: var(--mono); font-size: 11px; overflow-x: auto; background: var(--bg); padding: 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Solana quote bench: CoW Swap vs Kamino</h1>
+  <p class="lead">Fires three quotes at the same moment and lays out where every amount comes from.</p>
+
+  <section class="panel">
+    <form id="f">
+      <label>Pair preset
+        <select id="preset">
+          <option value="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v|So11111111111111111111111111111111111111112|100">USDC → SOL</option>
+          <option value="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v|XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB|100">USDC → TSLAx</option>
+          <option value="XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB|So11111111111111111111111111111111111111112|0.1">TSLAx → SOL</option>
+          <option value="So11111111111111111111111111111111111111112|EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v|1">SOL → USDC</option>
+        </select>
+      </label>
+      <label class="wide">Sell mint <input id="sell" class="mono" required /></label>
+      <label class="wide">Buy mint <input id="buy" class="mono" required /></label>
+      <label>Sell amount <input id="amount" type="number" step="any" min="0" required /></label>
+      <label>Slippage (bps) <input id="slip" type="number" value="50" min="0" max="5000" /></label>
+      <label class="wide">Wallet (owner / Kamino executor) <input id="wallet" class="mono" placeholder="Any Solana address, e.g. your wallet" required /></label>
+      <label>Auto-refresh
+        <select id="auto"><option value="0">off</option><option value="10">every 10s</option><option value="20">every 20s</option></select>
+      </label>
+      <button type="submit" id="go">Quote all three</button>
+    </form>
+  </section>
+
+  <div id="out"></div>
+
+  <h2>History</h2>
+  <div class="panel tbl-wrap">
+    <table id="hist">
+      <thead><tr>
+        <th>Time</th><th>Pair</th><th>Slip</th>
+        <th>CoW Swap shows</th><th>Kamino shows</th><th>Kamino+CoW shows</th>
+        <th>Kamino+CoW vs CoW Swap</th><th>Kamino vs CoW Swap</th><th>Kamino+CoW expected vs CoW</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="note">All deltas are in bps of the CoW Swap "Receive (incl. fees)" amount. Positive means more tokens for the user than CoW Swap.</p>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const decCache = {}
+const KNOWN = { So11111111111111111111111111111111111111112: ['SOL', 9], EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: ['USDC', 6], XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB: ['TSLAx', 8] }
+let timer = null
+
+function applyPreset() {
+  const [s, b, a] = $('preset').value.split('|')
+  $('sell').value = s; $('buy').value = b; $('amount').value = a
+}
+$('preset').addEventListener('change', applyPreset)
+applyPreset()
+
+async function decimals(mint) {
+  if (KNOWN[mint]) return KNOWN[mint][1]
+  if (decCache[mint] != null) return decCache[mint]
+  const j = await fetch('/api/decimals?mint=' + mint).then((r) => r.json())
+  const d = j?.result?.value?.decimals
+  if (d == null) throw new Error('Cannot read decimals for ' + mint)
+  return (decCache[mint] = d)
+}
+const sym = (m) => (KNOWN[m] ? KNOWN[m][0] : m.slice(0, 4) + '…')
+
+function toAtoms(str, dec) {
+  const [i, f = ''] = String(str).split('.')
+  return BigInt(i || '0') * 10n ** BigInt(dec) + BigInt((f + '0'.repeat(dec)).slice(0, dec) || '0')
+}
+function fmt(atoms, dec, digits = 6) {
+  if (atoms == null) return '—'
+  const neg = atoms < 0n; let a = neg ? -atoms : atoms
+  const s = a.toString().padStart(dec + 1, '0')
+  const i = s.slice(0, s.length - dec), f = s.slice(s.length - dec).slice(0, digits)
+  return (neg ? '−' : '') + i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (f ? '.' + f : '')
+}
+const bps = (a, ref) => (a == null || !ref ? null : Number(((a - ref) * 1000000n) / ref) / 100)
+const fmtBps = (x) => (x == null ? '—' : `<span class="${x >= 0 ? 'good' : 'bad'}">${x >= 0 ? '+' : ''}${x.toFixed(2)} bps</span>`)
+
+async function getJson(url, init) {
+  const t0 = performance.now()
+  const r = await fetch(url, init)
+  const body = await r.json().catch(() => ({}))
+  return { ok: r.ok, status: r.status, body, ms: Math.round(performance.now() - t0) }
+}
+
+async function run() {
+  const sell = $('sell').value.trim(), buy = $('buy').value.trim(), wallet = $('wallet').value.trim()
+  const slip = BigInt(Math.max(0, parseInt($('slip').value || '0', 10)))
+  $('go').disabled = true
+  try {
+    const [sd, bd] = await Promise.all([decimals(sell), decimals(buy)])
+    const amountAtoms = toAtoms($('amount').value, sd)
+    const kParams = (routers) => new URLSearchParams({
+      tokenIn: sell, tokenOut: buy, amount: amountAtoms.toString(), slippageBps: slip.toString(),
+      priorityFee: 'normal', executor: wallet, ...(routers ? { routers } : {}),
+    })
+    const cowBody = {
+      sellToken: sell, buyToken: buy, from: wallet, receiver: wallet, kind: 'sell',
+      sellAmountBeforeFee: amountAtoms.toString(), priceQuality: 'optimal', signingScheme: 'eip712',
+    }
+    const [cow, kAll, kCow] = await Promise.all([
+      getJson('/api/cow', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(cowBody) }),
+      getJson('/api/kamino?' + kParams('')),
+      getJson('/api/kamino?' + kParams('cowswap')),
+    ])
+    render({ sell, buy, sd, bd, slip, amountAtoms, cow, kAll, kCow })
+  } catch (e) {
+    $('out').innerHTML = `<h2>Error</h2><div class="panel err">${String(e)}</div>`
+  } finally {
+    $('go').disabled = false
+  }
+}
+
+function analyse({ slip, cow, kAll, kCow }) {
+  const D = 10000n
+  const res = {}
+  const q = cow.ok ? cow.body.quote : null
+  if (q) {
+    const c = q.costs || {}
+    const network = BigInt(c.networkFees || 0), ata = BigInt(c.buyTokenAtaCosts || 0), proto = BigInt(c.protocolFee || 0)
+    const after = BigInt(q.buyAmount)
+    const before = after + network + ata
+    res.cow = { before, network, ata, proto, after, min: (after * (D - slip)) / D, shows: before, receive: after, verified: cow.body.verified, id: cow.body.id }
+  }
+  const ka = kAll.ok ? kAll.body.swap : null
+  if (ka) {
+    res.kAll = { exp: BigInt(ka.amountOutSimulated), min: BigInt(ka.amountOutMinimum), plan: ka.plan, impact: ka.priceImpactSimulatedBps }
+  }
+  const kc = kCow.ok ? kCow.body.swap : null
+  if (kc) {
+    const shown = BigInt(kc.amountOutSimulated), min = BigInt(kc.amountOutMinimum)
+    const impliedExp = slip < D ? (min * D) / (D - slip) : null
+    res.kCow = { shown, min, impliedExp, sameAsMin: shown === min, meta: kc.metadata, impact: kc.priceImpactSimulatedBps }
+  }
+  return res
+}
+
+function card(title, sub, value, ref, dec, unit) {
+  const d = bps(value, ref)
+  return `<div class="panel card"><h3>${title}</h3><div class="sub">${sub}</div>
+    <div class="big">${fmt(value, dec)} <span class="note">${unit}</span></div>
+    <div class="delta">${ref != null && value != null ? fmtBps(d) + ' <span class="note">vs CoW Swap receive</span>' : '&nbsp;'}</div></div>`
+}
+
+function render(ctx) {
+  const { sell, buy, bd, slip, cow, kAll, kCow } = ctx
+  const a = analyse(ctx)
+  const U = sym(buy), ref = a.cow?.receive
+  const route = a.kAll?.plan?.map((p) => `${p.name} ${p.bps / 100}%`).join(', ') || '—'
+  const slipPct = (Number(slip) / 100).toFixed(2) + '%'
+  const errs = [['CoW API', cow], ['Kamino', kAll], ['Kamino+CoW', kCow]].filter(([, r]) => !r.ok)
+
+  let html = `<h2>What each app shows · ${sym(sell)} → ${U}</h2>`
+  if (errs.length) html += `<div class="panel err">${errs.map(([n, r]) => `${n}: HTTP ${r.status} ${JSON.stringify(r.body)}`).join('\n')}</div>`
+  html += `<div class="cards">
+    ${card('CoW Swap', `Receive (incl. fees) · big number shows ${fmt(a.cow?.before, bd)}`, a.cow?.receive, ref, bd, U)}
+    ${card('Kamino (all routers)', `<span class="chip">${route}</span>`, a.kAll?.exp, ref, bd, U)}
+    ${card('Kamino (routers=cowswap)', a.kCow ? (a.kCow.sameAsMin ? 'Shown amount equals the signed minimum' : 'Shown amount differs from minimum') : '', a.kCow?.shown, ref, bd, U)}
+  </div>`
+
+  const row = (label, v, hl) => `<tr class="${hl ? 'hl' : ''}"><td>${label}</td>${v.map((x) => `<td class="num">${typeof x === 'string' ? x : fmt(x, bd)}</td>`).join('')}</tr>`
+  const kAllCostsNote = 'paid in SOL, outside the amount'
+  html += `<h2>Breakdown (${U})</h2><div class="panel tbl-wrap"><table>
+    <thead><tr><th></th><th>CoW Swap (CoW API)</th><th>Kamino (all routers)</th><th>Kamino (via CoW)</th></tr></thead><tbody>
+    ${row('Output at market price, before costs', [a.cow?.before, a.kAll?.exp, 'not returned'])}
+    ${row('− network fee taken from output', [a.cow?.network, kAllCostsNote, 'inside the CoW quote'])}
+    ${row('− token account (ATA) rent taken from output', [a.cow?.ata, kAllCostsNote, 'inside the CoW quote'])}
+    ${row('= Expected output after costs', [a.cow?.after, a.kAll?.exp, a.kCow?.impliedExp ?? '—'])}
+    ${row(`− slippage tolerance (${slipPct})`, [a.cow ? a.cow.after - a.cow.min : null, a.kAll ? a.kAll.exp - a.kAll.min : null, a.kCow?.impliedExp != null ? a.kCow.impliedExp - a.kCow.min : null])}
+    ${row('= Minimum received (signed limit)', [a.cow?.min, a.kAll?.min, a.kCow?.min])}
+    ${row('Amount presented as "you get"', [a.cow?.receive, a.kAll?.exp, a.kCow?.shown], true)}
+    </tbody></table>
+    <p class="note">Kamino (via CoW) "expected after costs" is implied: <code>amountOutMinimum ÷ (1 − slippage)</code>. Kamino returns only the minimum for the CoW route.
+    Kamino's own routes return <code>amountOutSimulated</code>; the transaction fee, priority fee and any new token-account rent are charged to the wallet in SOL and are not in that number.</p>
+  </div>`
+
+  html += `<h2>Why the numbers differ</h2><div class="panel">${explain(a, ctx)}</div>`
+  html += `<details style="margin-top:12px"><summary>Raw responses</summary><pre>${esc(JSON.stringify({ cow: cow.body, kamino: strip(kAll.body), kaminoCow: strip(kCow.body) }, null, 2))}</pre></details>`
+  $('out').innerHTML = html
+  addHistory(a, ctx)
+}
+
+function explain(a, { buy, bd, slip }) {
+  const U = sym(buy)
+  const items = []
+  if (a.kCow && a.cow) {
+    const slipCut = a.kCow.impliedExp != null ? a.kCow.impliedExp - a.kCow.min : null
+    items.push(`<b>Kamino (via CoW) shows the minimum, not the expected amount.</b> Its API returns <code>amountOutSimulated = amountOutMinimum = ${fmt(a.kCow.min, bd)}</code>${a.kCow.sameAsMin ? '' : ' (they differ this time)'}.
+      That number already has the ${Number(slip) / 100}% slippage tolerance removed (${fmt(slipCut, bd)} ${U}), while every other route on Kamino and CoW Swap show the expected amount and apply slippage only to the minimum.
+      This alone costs CoW about <b>${Number(slip)} bps</b> in the comparison and is why it loses every time. Changing slippage moves the Kamino+CoW number; it does not move the others.`)
+    items.push(`Undoing the slippage cut, Kamino+CoW is ${fmtBps(bps(a.kCow.impliedExp, a.cow.receive))} against the CoW Swap quote fetched in the same second. ${Math.abs(bps(a.kCow.impliedExp, a.cow.receive) ?? 0) > 1 ? ' The difference left over comes from timing. Kamino seems to reuse a CoW quote for a while: the same minimum came back across refreshes about 30s apart.' : ' So Kamino uses the CoW quote <code>buyAmount</code> unchanged and only takes slippage off it.'}`)
+  }
+  if (a.kAll && a.cow) {
+    const pre = bps(a.kAll.exp, a.cow.before), post = bps(a.kAll.exp, a.cow.after)
+    const costBps = bps(a.cow.after, a.cow.before)
+    items.push(`<b>Kamino (all routers) vs CoW Swap.</b> On price alone (before costs) Kamino is ${fmtBps(pre)}. After CoW takes its costs out of the output (${fmtBps(costBps)}: network fee ${fmt(a.cow.network, bd)} + account rent ${fmt(a.cow.ata, bd)} ${U}) the gap is ${fmtBps(post)}.
+      Kamino's number has no costs inside it: the user pays the transaction fee, priority fee and ${a.cow.ata > 0n ? '<b>the new token account rent (~0.002 SOL)</b>' : 'any new token account rent'} in SOL on top. CoW nets the same kinds of cost out of the bought tokens, so the two numbers are not like for like.`)
+    if (a.cow.ata > 0n) {
+      items.push(`<b>Account rent dominates small trades.</b> The receiving token account does not exist yet, so CoW takes ${fmt(a.cow.ata, bd)} ${U} (${fmtBps(bps(a.cow.after, a.cow.after + a.cow.ata))}) from the output to pay its rent. A Jupiter-style route charges that rent in SOL, so it never shows in the output amount.`)
+    }
+    const venue = `<span class="chip">${a.kAll.plan.map((p) => p.name).join(', ')}</span>`
+    items.push(pre > 1
+      ? `Kamino's best route was ${venue} and it beats CoW on price before costs by ${fmtBps(pre)}. Solvers either did not reach that venue or priced it worse. That is for the solver team to look at, and no change to the display will close it.`
+      : `Kamino's best route was ${venue}. On price before costs CoW is level with it or ahead, so liquidity is not the problem for this pair.`)
+  }
+  items.push(`<b>Fair display for Kamino.</b> For the CoW route show the expected amount (the CoW quote <code>buyAmount</code>, i.e. min ÷ (1 − slippage)) in the main field and keep <code>amountOutMinimum</code> as "minimum received". Either show CoW's netted costs (<code>quote.costs</code>) as a line, or add the SOL fees and rent of other routes into their comparison number, so every route is ranked on the same basis.`)
+  return `<ol class="explain">${items.map((i) => `<li>${i}</li>`).join('')}</ol>`
+}
+
+function addHistory(a, { sell, buy, bd, slip }) {
+  const ref = a.cow?.receive
+  const tr = document.createElement('tr')
+  tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${sym(sell)}→${sym(buy)}</td><td class="num">${slip}</td>
+    <td class="num">${fmt(ref, bd)}</td><td class="num">${fmt(a.kAll?.exp, bd)}</td><td class="num">${fmt(a.kCow?.shown, bd)}</td>
+    <td class="num">${fmtBps(bps(a.kCow?.shown, ref))}</td><td class="num">${fmtBps(bps(a.kAll?.exp, ref))}</td><td class="num">${fmtBps(bps(a.kCow?.impliedExp, ref))}</td>`
+  $('hist').querySelector('tbody').prepend(tr)
+}
+
+function strip(o) {
+  if (Array.isArray(o)) return o.map(strip)
+  if (o && typeof o === 'object') return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'string' && v.length > 120 ? v.slice(0, 32) + `…(${v.length} chars)` : strip(v)]))
+  return o
+}
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+
+const WALLET_KEY = 'quoteBench.wallet'
+try { $('wallet').value = new URLSearchParams(location.search).get('wallet') || localStorage.getItem(WALLET_KEY) || '' } catch {}
+$('f').addEventListener('submit', (e) => {
+  e.preventDefault()
+  try { localStorage.setItem(WALLET_KEY, $('wallet').value.trim()) } catch {}
+  run()
+})
+$('auto').addEventListener('change', () => {
+  clearInterval(timer)
+  const s = Number($('auto').value)
+  if (s) timer = setInterval(run, s * 1000)
+})
+if ($('wallet').value) run()
+</script>
+</body>
+</html>
