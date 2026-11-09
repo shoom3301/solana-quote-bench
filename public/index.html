@@ -104,12 +104,12 @@
     <table id="hist">
       <thead><tr>
         <th>Time</th><th>Pair</th><th>Slip</th>
-        <th>CoW Swap shows</th><th>Kamino shows</th><th>Kamino+CoW shows</th><th>Kamino+CoW (fixed)</th>
-        <th>Kamino+CoW vs CoW Swap</th><th>Kamino vs CoW Swap</th><th>Kamino+CoW expected vs CoW</th><th>Fixed vs Kamino</th>
+        <th>CoW Swap shows</th><th>Kamino shows</th><th>Kamino+CoW shows</th><th>Kamino+CoW (costs outside)</th>
+        <th>Kamino+CoW vs CoW Swap</th><th>Kamino vs CoW Swap</th><th>Costs outside vs Kamino</th>
       </tr></thead>
       <tbody></tbody>
     </table>
-    <p class="note">Deltas are in bps of the CoW Swap "Receive (incl. fees)" amount, except "Fixed vs Kamino", which compares the fixed CoW route with Kamino (all routers). Positive means more tokens for the user than CoW Swap.</p>
+    <p class="note">Deltas are in bps of the CoW Swap "Receive (incl. fees)" amount, except "Costs outside vs Kamino", which compares the CoW route with costs added back with Kamino (all routers). Positive means more tokens for the user than CoW Swap.</p>
   </div>
 </main>
 
@@ -215,14 +215,15 @@ function analyse({ slip, cow, kAll, kCow }) {
   }
   const kc = kCow.ok ? kCow.body.swap : null
   if (kc) {
+    // Since Kamino's fix, amountOutSimulated for the CoW route is the CoW quote buyAmount (expected, after CoW costs)
+    // and amountOutMinimum is that less slippage. sameAsMin flags a regression to the old behaviour.
     const shown = BigInt(kc.amountOutSimulated), min = BigInt(kc.amountOutMinimum)
-    const impliedExp = slip < D ? (min * D) / (D - slip) : null
-    res.kCow = { shown, min, impliedExp, sameAsMin: shown === min, meta: kc.metadata, impact: kc.priceImpactSimulatedBps }
+    res.kCow = { shown, min, sameAsMin: slip > 0n && shown === min, meta: kc.metadata, impact: kc.priceImpactSimulatedBps }
   }
-  if (res.kCow?.impliedExp != null && res.cow) {
-    // Kamino's own routes leave fees and account rent out of their amount, so the fixed CoW figure
-    // adds back the costs the CoW quote netted out, using the CoW quote fetched in the same round.
-    res.kCowFixed = { shown: res.kCow.impliedExp + res.cow.network + res.cow.ata }
+  if (res.kCow && res.cow) {
+    // Kamino's own routes leave fees and account rent out of their amount, so this figure adds back
+    // the costs the CoW quote netted out, using the CoW quote fetched in the same round.
+    res.kCowFixed = { shown: res.kCow.shown + res.cow.network + res.cow.ata }
   }
   return res
 }
@@ -248,24 +249,24 @@ function render(ctx) {
   html += `<div class="cards">
     ${card('CoW Swap', `Receive (incl. fees) · big number shows ${fmt(a.cow?.before, bd)}`, a.cow?.receive, ref, bd, U)}
     ${card('Kamino (all routers)', `<span class="chip">${route}</span>`, a.kAll?.exp, ref, bd, U)}
-    ${card('Kamino (routers=cowswap)', a.kCow ? (a.kCow.sameAsMin ? 'Shown amount equals the signed minimum' : 'Shown amount differs from minimum') : '', a.kCow?.shown, ref, bd, U)}
-    ${card('Kamino (routers=cowswap) (fixed)', `Expected amount before costs, like other Kamino routes · ${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))} vs Kamino (all routers)`, a.kCowFixed?.shown, ref, bd, U)}
+    ${card('Kamino (routers=cowswap)', a.kCow ? (a.kCow.sameAsMin ? '<span class="bad">Regression: shown amount equals the signed minimum</span>' : 'Expected amount, after CoW costs') : '', a.kCow?.shown, ref, bd, U)}
+    ${card('Kamino (routers=cowswap) (costs outside)', `Before costs, like other Kamino routes · ${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))} vs Kamino (all routers)`, a.kCowFixed?.shown, ref, bd, U)}
   </div>`
 
   const row = (label, v, hl) => `<tr class="${hl ? 'hl' : ''}"><td>${label}</td>${v.map((x) => `<td class="num">${typeof x === 'string' ? x : fmt(x, bd)}</td>`).join('')}</tr>`
   const kAllCostsNote = 'paid in SOL, outside the amount'
   html += `<h2>Breakdown (${U})</h2><div class="panel tbl-wrap"><table>
-    <thead><tr><th></th><th>CoW Swap (CoW API)</th><th>Kamino (all routers)</th><th>Kamino (via CoW)</th><th>Kamino (via CoW) (fixed)</th></tr></thead><tbody>
+    <thead><tr><th></th><th>CoW Swap (CoW API)</th><th>Kamino (all routers)</th><th>Kamino (via CoW)</th><th>Kamino (via CoW) (costs outside)</th></tr></thead><tbody>
     ${row('Output at market price, before costs', [a.cow?.before, a.kAll?.exp, 'not returned', a.kCowFixed?.shown])}
     ${row('− network fee taken from output', [a.cow?.network, kAllCostsNote, 'inside the CoW quote', a.cow?.network])}
     ${row('− token account (ATA) rent taken from output', [a.cow?.ata, kAllCostsNote, 'inside the CoW quote', a.cow?.ata])}
-    ${row('= Expected output after costs', [a.cow?.after, a.kAll?.exp, a.kCow?.impliedExp ?? '—', a.kCow?.impliedExp ?? '—'])}
-    ${row(`− slippage tolerance (${slipPct})`, [a.cow ? a.cow.after - a.cow.min : null, a.kAll ? a.kAll.exp - a.kAll.min : null, a.kCow?.impliedExp != null ? a.kCow.impliedExp - a.kCow.min : null, a.kCow?.impliedExp != null ? a.kCow.impliedExp - a.kCow.min : null])}
+    ${row('= Expected output after costs', [a.cow?.after, a.kAll?.exp, a.kCow?.shown, a.kCow?.shown])}
+    ${row(`− slippage tolerance (${slipPct})`, [a.cow ? a.cow.after - a.cow.min : null, a.kAll ? a.kAll.exp - a.kAll.min : null, a.kCow ? a.kCow.shown - a.kCow.min : null, a.kCow ? a.kCow.shown - a.kCow.min : null])}
     ${row('= Minimum received (signed limit)', [a.cow?.min, a.kAll?.min, a.kCow?.min, a.kCow?.min])}
     ${row('Amount presented as "you get"', [a.cow?.receive, a.kAll?.exp, a.kCow?.shown, a.kCowFixed?.shown], true)}
     </tbody></table>
-    <p class="note">Kamino (via CoW) "expected after costs" is implied: <code>amountOutMinimum ÷ (1 − slippage)</code>. Kamino returns only the minimum for the CoW route.
-    The fixed column is what Kamino should show for the CoW route: that expected amount plus the costs the CoW quote netted out (<code>quote.costs</code>), so it matches how Kamino's own routes leave fees and rent out of their number.
+    <p class="note">Kamino (via CoW) returns <code>amountOutSimulated</code> = the CoW quote <code>buyAmount</code>, which already has CoW's network fee and account rent taken out.
+    The costs-outside column is what Kamino should rank the CoW route by: that amount plus the costs the CoW quote netted out (<code>quote.costs</code>), so it matches how Kamino's own routes leave fees and rent out of their number.
     Kamino's own routes return <code>amountOutSimulated</code>; the transaction fee, priority fee and any new token-account rent are charged to the wallet in SOL and are not in that number.</p>
   </div>`
 
@@ -279,11 +280,13 @@ function explain(a, { buy, bd, slip }) {
   const U = sym(buy)
   const items = []
   if (a.kCow && a.cow) {
-    const slipCut = a.kCow.impliedExp != null ? a.kCow.impliedExp - a.kCow.min : null
-    items.push(`<b>Kamino (via CoW) shows the minimum, not the expected amount.</b> Its API returns <code>amountOutSimulated = amountOutMinimum = ${fmt(a.kCow.min, bd)}</code>${a.kCow.sameAsMin ? '' : ' (they differ this time)'}.
-      That number already has the ${Number(slip) / 100}% slippage tolerance removed (${fmt(slipCut, bd)} ${U}), while every other route on Kamino and CoW Swap show the expected amount and apply slippage only to the minimum.
-      This alone costs CoW about <b>${Number(slip)} bps</b> in the comparison and is why it loses every time. Changing slippage moves the Kamino+CoW number; it does not move the others.`)
-    items.push(`Undoing the slippage cut, Kamino+CoW is ${fmtBps(bps(a.kCow.impliedExp, a.cow.receive))} against the CoW Swap quote fetched in the same second. ${Math.abs(bps(a.kCow.impliedExp, a.cow.receive) ?? 0) > 1 ? ' The difference left over comes from timing. Kamino seems to reuse a CoW quote for a while: the same minimum came back across refreshes about 30s apart.' : ' So Kamino uses the CoW quote <code>buyAmount</code> unchanged and only takes slippage off it.'}`)
+    const d = bps(a.kCow.shown, a.cow.receive)
+    items.push(a.kCow.sameAsMin
+      ? `<b>Regression: Kamino (via CoW) shows the minimum again.</b> Its API returns <code>amountOutSimulated = amountOutMinimum = ${fmt(a.kCow.min, bd)}</code>, which already has the ${Number(slip) / 100}% slippage tolerance removed. That costs CoW about <b>${Number(slip)} bps</b> in the comparison.`
+      : `<b>Kamino (via CoW) shows the expected amount.</b> <code>amountOutSimulated</code> is ${fmt(a.kCow.shown, bd)} ${U}, ${fmtBps(d)} against the CoW Swap quote fetched in the same second, and <code>amountOutMinimum</code> is that amount less the ${Number(slip) / 100}% slippage (${fmt(a.kCow.shown - a.kCow.min, bd)} ${U}).
+        ${Math.abs(d ?? 0) > 1 ? 'The difference left over is timing between the two quotes.' : 'So Kamino passes the CoW quote <code>buyAmount</code> through unchanged.'}`)
+    items.push(`<b>Still open: CoW's costs are inside its number.</b> The CoW <code>buyAmount</code> has the network fee (${fmt(a.cow.network, bd)} ${U}) and account rent (${fmt(a.cow.ata, bd)} ${U}) taken out, while Kamino's own routes charge those in SOL outside their number.
+      Ranking the CoW route by the costs-outside figure (${fmt(a.kCowFixed?.shown, bd)} ${U}) would put it on the same footing.`)
   }
   if (a.kAll && a.cow) {
     const pre = bps(a.kAll.exp, a.cow.before), post = bps(a.kAll.exp, a.cow.after)
@@ -299,9 +302,9 @@ function explain(a, { buy, bd, slip }) {
       : `Kamino's best route was ${venue}. On price before costs CoW is level with it or ahead, so liquidity is not the problem for this pair.`)
   }
   if (a.kCowFixed && a.kAll) {
-    items.push(`<b>The fixed column puts both on the same footing.</b> It shows the CoW route as Kamino shows its own routes: expected amount, with fees and account rent outside it (${fmt(a.kCowFixed.shown, bd)} ${U}). Against Kamino (all routers) it is ${fmtBps(bps(a.kCowFixed.shown, a.kAll.exp))}.`)
+    items.push(`<b>The costs-outside column puts both on the same footing.</b> It shows the CoW route as Kamino shows its own routes: expected amount, with fees and account rent outside it (${fmt(a.kCowFixed.shown, bd)} ${U}). Against Kamino (all routers) it is ${fmtBps(bps(a.kCowFixed.shown, a.kAll.exp))}.`)
   }
-  items.push(`<b>Fair display for Kamino.</b> For the CoW route show the expected amount (the CoW quote <code>buyAmount</code>, i.e. min ÷ (1 − slippage)) in the main field and keep <code>amountOutMinimum</code> as "minimum received". Either show CoW's netted costs (<code>quote.costs</code>) as a line, or add the SOL fees and rent of other routes into their comparison number, so every route is ranked on the same basis.`)
+  items.push(`<b>Remaining fix for Kamino.</b> Either rank the CoW route by <code>buyAmount + quote.costs.networkFees + quote.costs.buyTokenAtaCosts</code> and show those costs as a separate line, or subtract the SOL fees and new-account rent of other routes from their comparison number, so every route is ranked on the same basis.`)
   return `<ol class="explain">${items.map((i) => `<li>${i}</li>`).join('')}</ol>`
 }
 
@@ -310,7 +313,7 @@ function addHistory(a, { sell, buy, bd, slip }) {
   const tr = document.createElement('tr')
   tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${sym(sell)}→${sym(buy)}</td><td class="num">${slip}</td>
     <td class="num">${fmt(ref, bd)}</td><td class="num">${fmt(a.kAll?.exp, bd)}</td><td class="num">${fmt(a.kCow?.shown, bd)}</td><td class="num">${fmt(a.kCowFixed?.shown, bd)}</td>
-    <td class="num">${fmtBps(bps(a.kCow?.shown, ref))}</td><td class="num">${fmtBps(bps(a.kAll?.exp, ref))}</td><td class="num">${fmtBps(bps(a.kCow?.impliedExp, ref))}</td><td class="num">${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))}</td>`
+    <td class="num">${fmtBps(bps(a.kCow?.shown, ref))}</td><td class="num">${fmtBps(bps(a.kAll?.exp, ref))}</td><td class="num">${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))}</td>`
   $('hist').querySelector('tbody').prepend(tr)
 }
 
