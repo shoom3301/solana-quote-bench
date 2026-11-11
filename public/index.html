@@ -73,6 +73,7 @@
           <option value="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v|XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB|100">USDC → TSLAx</option>
           <option value="XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB|So11111111111111111111111111111111111111112|0.1">TSLAx → SOL</option>
           <option value="So11111111111111111111111111111111111111112|EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v|1">SOL → USDC</option>
+          <option value="So11111111111111111111111111111111111111112|XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB|0.05">SOL → TSLAx (new account rent)</option>
         </select>
       </label>
       <label class="wide">Sell mint <input id="sell" class="mono" required /></label>
@@ -104,12 +105,12 @@
     <table id="hist">
       <thead><tr>
         <th>Time</th><th>Pair</th><th>Slip</th>
-        <th>CoW Swap shows</th><th>Kamino shows</th><th>Kamino+CoW shows</th><th>Kamino+CoW (costs outside)</th>
-        <th>Kamino+CoW vs CoW Swap</th><th>Kamino vs CoW Swap</th><th>Costs outside vs Kamino</th>
+        <th>CoW Swap receive</th><th>Kamino shows</th><th>Kamino+CoW shows</th><th>Kamino+CoW receives (est.)</th><th>Kamino+CoW basis</th>
+        <th>Kamino+CoW receives vs CoW Swap</th><th>Kamino vs CoW Swap</th><th>Kamino+CoW vs Kamino (ranking)</th>
       </tr></thead>
       <tbody></tbody>
     </table>
-    <p class="note">Deltas are in bps of the CoW Swap "Receive (incl. fees)" amount, except "Costs outside vs Kamino", which compares the CoW route with costs added back with Kamino (all routers). Positive means more tokens for the user than CoW Swap.</p>
+    <p class="note">Deltas are in bps of the CoW Swap "Receive (incl. fees)" amount, except "Kamino+CoW vs Kamino (ranking)", which compares the two numbers Kamino ranks routes by. Positive means more tokens for the user than the reference. Basis: <code>before</code> = Kamino counts the CoW route before costs (current), <code>after</code> = after costs (old), <code>min</code> = signed minimum (oldest), <code>same</code> = CoW costs are under 20 bps of the output, too small to tell the basis apart from quote noise.</p>
   </div>
 </main>
 
@@ -215,17 +216,35 @@ function analyse({ slip, cow, kAll, kCow }) {
   }
   const kc = kCow.ok ? kCow.body.swap : null
   if (kc) {
-    // Since Kamino's fix, amountOutSimulated for the CoW route is the CoW quote buyAmount (expected, after CoW costs)
-    // and amountOutMinimum is that less slippage. sameAsMin flags a regression to the old behaviour.
+    // Since Kamino's second fix, amountOutSimulated for the CoW route is buyAmount + networkFees + buyTokenAtaCosts
+    // (before CoW costs, like Kamino's own routes), and amountOutMinimum is buyAmount less slippage (the signed limit).
     const shown = BigInt(kc.amountOutSimulated), min = BigInt(kc.amountOutMinimum)
-    res.kCow = { shown, min, sameAsMin: slip > 0n && shown === min, meta: kc.metadata, impact: kc.priceImpactSimulatedBps }
-  }
-  if (res.kCow && res.cow) {
-    // Kamino's own routes leave fees and account rent out of their amount, so this figure adds back
-    // the costs the CoW quote netted out, using the CoW quote fetched in the same round.
-    res.kCowFixed = { shown: res.kCow.shown + res.cow.network + res.cow.ata }
+    res.kCow = { shown, min, meta: kc.metadata, impact: kc.priceImpactSimulatedBps, basis: 'unknown' }
+    if (slip > 0n && shown === min) res.kCow.basis = 'min'
+    if (res.cow) {
+      const costs = res.cow.network + res.cow.ata
+      // Kamino returns no cost fields, so what the user receives is estimated with the costs of the CoW quote fetched in the same round.
+      res.kCow.costs = costs
+      res.kCow.receive = shown - costs
+      if (res.kCow.basis !== 'min') {
+        const dBefore = abs(shown - res.cow.before), dAfter = abs(shown - res.cow.after)
+        // Kamino fetches its own CoW quote, so quote-to-quote noise (a few bps) can exceed small costs. Below
+        // COSTS_MIN_BPS of the output (e.g. buying SOL, where only a tiny network fee applies) the basis cannot be told apart.
+        res.kCow.basis = costs * 10000n < res.cow.before * COSTS_MIN_BPS ? 'same' : dBefore < dAfter ? 'before' : 'after'
+        if (res.kCow.basis === 'after') res.kCow.receive = shown
+      }
+    }
   }
   return res
+}
+const abs = (x) => (x < 0n ? -x : x)
+const COSTS_MIN_BPS = 20n
+const BASIS = {
+  before: '<span class="good">Before CoW costs</span>, like Kamino\'s own routes',
+  after: '<span class="bad">After CoW costs</span>: CoW route penalised in ranking (old behaviour)',
+  min: '<span class="bad">Regression: shown amount equals the signed minimum</span>',
+  same: 'CoW costs are too small for this pair to tell before/after costs apart',
+  unknown: 'Basis unknown (no CoW quote this round)',
 }
 
 function card(title, sub, value, ref, dec, unit) {
@@ -249,24 +268,26 @@ function render(ctx) {
   html += `<div class="cards">
     ${card('CoW Swap', `Receive (incl. fees) · big number shows ${fmt(a.cow?.before, bd)}`, a.cow?.receive, ref, bd, U)}
     ${card('Kamino (all routers)', `<span class="chip">${route}</span>`, a.kAll?.exp, ref, bd, U)}
-    ${card('Kamino (routers=cowswap)', a.kCow ? (a.kCow.sameAsMin ? '<span class="bad">Regression: shown amount equals the signed minimum</span>' : 'Expected amount, after CoW costs') : '', a.kCow?.shown, ref, bd, U)}
-    ${card('Kamino (routers=cowswap) (costs outside)', `Before costs, like other Kamino routes · ${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))} vs Kamino (all routers)`, a.kCowFixed?.shown, ref, bd, U)}
+    ${card('Kamino (routers=cowswap) shows', a.kCow ? `${BASIS[a.kCow.basis]} · ${fmtBps(bps(a.kCow.shown, a.kAll?.exp))} vs Kamino (all routers)` : '', a.kCow?.shown, ref, bd, U)}
+    ${card('Kamino (routers=cowswap) user receives', `Estimated: shown − CoW costs (${fmt(a.kCow?.costs, bd)} ${U}). Kamino shows no fee line for this`, a.kCow?.receive, ref, bd, U)}
   </div>`
 
   const row = (label, v, hl) => `<tr class="${hl ? 'hl' : ''}"><td>${label}</td>${v.map((x) => `<td class="num">${typeof x === 'string' ? x : fmt(x, bd)}</td>`).join('')}</tr>`
   const kAllCostsNote = 'paid in SOL, outside the amount'
+  const kCowCostsNote = (x) => (a.kCow?.basis === 'after' ? 'inside the CoW quote' : x == null ? 'not returned' : `not returned (CoW quote: ${fmt(x, bd)})`)
   html += `<h2>Breakdown (${U})</h2><div class="panel tbl-wrap"><table>
-    <thead><tr><th></th><th>CoW Swap (CoW API)</th><th>Kamino (all routers)</th><th>Kamino (via CoW)</th><th>Kamino (via CoW) (costs outside)</th></tr></thead><tbody>
-    ${row('Output at market price, before costs', [a.cow?.before, a.kAll?.exp, 'not returned', a.kCowFixed?.shown])}
-    ${row('− network fee taken from output', [a.cow?.network, kAllCostsNote, 'inside the CoW quote', a.cow?.network])}
-    ${row('− token account (ATA) rent taken from output', [a.cow?.ata, kAllCostsNote, 'inside the CoW quote', a.cow?.ata])}
-    ${row('= Expected output after costs', [a.cow?.after, a.kAll?.exp, a.kCow?.shown, a.kCow?.shown])}
-    ${row(`− slippage tolerance (${slipPct})`, [a.cow ? a.cow.after - a.cow.min : null, a.kAll ? a.kAll.exp - a.kAll.min : null, a.kCow ? a.kCow.shown - a.kCow.min : null, a.kCow ? a.kCow.shown - a.kCow.min : null])}
-    ${row('= Minimum received (signed limit)', [a.cow?.min, a.kAll?.min, a.kCow?.min, a.kCow?.min])}
-    ${row('Amount presented as "you get"', [a.cow?.receive, a.kAll?.exp, a.kCow?.shown, a.kCowFixed?.shown], true)}
+    <thead><tr><th></th><th>CoW Swap (CoW API)</th><th>Kamino (all routers)</th><th>Kamino (via CoW)</th></tr></thead><tbody>
+    ${row('Output at market price, before costs', [a.cow?.before, a.kAll?.exp, a.kCow?.basis === 'after' ? 'not returned' : a.kCow?.shown])}
+    ${row('− network fee taken from output', [a.cow?.network, kAllCostsNote, kCowCostsNote(a.cow?.network)])}
+    ${row('− token account (ATA) rent taken from output', [a.cow?.ata, kAllCostsNote, kCowCostsNote(a.cow?.ata)])}
+    ${row('= Expected output after costs', [a.cow?.after, a.kAll?.exp, a.kCow?.receive])}
+    ${row(`− slippage tolerance (${slipPct})`, [a.cow ? a.cow.after - a.cow.min : null, a.kAll ? a.kAll.exp - a.kAll.min : null, a.kCow?.receive != null ? a.kCow.receive - a.kCow.min : null])}
+    ${row('= Minimum received (signed limit)', [a.cow?.min, a.kAll?.min, a.kCow?.min])}
+    ${row('Number Kamino ranks routes by', ['—', a.kAll?.exp, a.kCow?.shown], true)}
+    ${row('What the user actually gets in tokens', [a.cow?.receive, a.kAll?.exp, a.kCow?.receive], true)}
     </tbody></table>
-    <p class="note">Kamino (via CoW) returns <code>amountOutSimulated</code> = the CoW quote <code>buyAmount</code>, which already has CoW's network fee and account rent taken out.
-    The costs-outside column is what Kamino should rank the CoW route by: that amount plus the costs the CoW quote netted out (<code>quote.costs</code>), so it matches how Kamino's own routes leave fees and rent out of their number.
+    <p class="note">Kamino (via CoW) returns <code>amountOutSimulated</code> = CoW quote <code>buyAmount + costs.networkFees + costs.buyTokenAtaCosts</code>, the amount before CoW's costs, and <code>amountOutMinimum</code> = <code>buyAmount</code> less slippage.
+    Kamino's response has no cost fields, so the CoW costs and "user receives" figures here come from the CoW quote fetched in the same round.
     Kamino's own routes return <code>amountOutSimulated</code>; the transaction fee, priority fee and any new token-account rent are charged to the wallet in SOL and are not in that number.</p>
   </div>`
 
@@ -280,13 +301,22 @@ function explain(a, { buy, bd, slip }) {
   const U = sym(buy)
   const items = []
   if (a.kCow && a.cow) {
-    const d = bps(a.kCow.shown, a.cow.receive)
-    items.push(a.kCow.sameAsMin
-      ? `<b>Regression: Kamino (via CoW) shows the minimum again.</b> Its API returns <code>amountOutSimulated = amountOutMinimum = ${fmt(a.kCow.min, bd)}</code>, which already has the ${Number(slip) / 100}% slippage tolerance removed. That costs CoW about <b>${Number(slip)} bps</b> in the comparison.`
-      : `<b>Kamino (via CoW) shows the expected amount.</b> <code>amountOutSimulated</code> is ${fmt(a.kCow.shown, bd)} ${U}, ${fmtBps(d)} against the CoW Swap quote fetched in the same second, and <code>amountOutMinimum</code> is that amount less the ${Number(slip) / 100}% slippage (${fmt(a.kCow.shown - a.kCow.min, bd)} ${U}).
-        ${Math.abs(d ?? 0) > 1 ? 'The difference left over is timing between the two quotes.' : 'So Kamino passes the CoW quote <code>buyAmount</code> through unchanged.'}`)
-    items.push(`<b>Still open: CoW's costs are inside its number.</b> The CoW <code>buyAmount</code> has the network fee (${fmt(a.cow.network, bd)} ${U}) and account rent (${fmt(a.cow.ata, bd)} ${U}) taken out, while Kamino's own routes charge those in SOL outside their number.
-      Ranking the CoW route by the costs-outside figure (${fmt(a.kCowFixed?.shown, bd)} ${U}) would put it on the same footing.`)
+    const k = a.kCow, costs = k.costs
+    const dBefore = bps(k.shown, a.cow.before), dMin = bps(k.min, a.cow.min)
+    if (k.basis === 'min') {
+      items.push(`<b>Regression: Kamino (via CoW) shows the minimum again.</b> Its API returns <code>amountOutSimulated = amountOutMinimum = ${fmt(k.min, bd)}</code>, which already has the ${Number(slip) / 100}% slippage tolerance removed. That costs CoW about <b>${Number(slip)} bps</b> in the comparison.`)
+    } else if (k.basis === 'after') {
+      items.push(`<b>Regression: Kamino (via CoW) ranks the CoW route after costs again.</b> <code>amountOutSimulated</code> (${fmt(k.shown, bd)} ${U}) matches the CoW <code>buyAmount</code> (${fmt(a.cow.after, bd)}), which has the network fee and account rent (${fmt(costs, bd)} ${U}) taken out, while Kamino's own routes charge those in SOL outside their number.`)
+    } else if (k.basis === 'before') {
+      items.push(`<b>Kamino (via CoW) ranks the CoW route before costs.</b> <code>amountOutSimulated</code> is ${fmt(k.shown, bd)} ${U}, ${fmtBps(dBefore)} against CoW's <code>buyAmount + networkFees + buyTokenAtaCosts</code> (${fmt(a.cow.before, bd)}) from the quote fetched in the same round, so it is ranked on the same basis as Kamino's own routes.
+        <code>amountOutMinimum</code> (${fmt(k.min, bd)}) is ${fmtBps(dMin)} against CoW's signed minimum, so the signed limit still has the costs taken out.${Math.abs(dBefore ?? 0) > 1 ? ' The difference left over is timing between the two quotes.' : ''}`)
+    } else {
+      items.push(`<b>Kamino (via CoW) shows ${fmt(k.shown, bd)} ${U}</b>, ${fmtBps(dBefore)} against the CoW quote. CoW's costs here (${fmt(costs, bd)} ${U}, ${fmtBps(bps(a.cow.after, a.cow.before))}) are within the noise between two separately fetched quotes (the receiving account exists, or the buy token is SOL), so this pair cannot show whether Kamino counts costs before or after. Try a pair whose buy token account does not exist yet, such as SOL → TSLAx.`)
+    }
+    if (k.basis === 'before' && costs > 0n) {
+      items.push(`<b>Still open: no fee line in Kamino's UI.</b> Kamino shows ${fmt(k.shown, bd)} ${U} as the Buy amount, but the user receives about ${fmt(k.receive, bd)} ${U}: CoW's network fee (${fmt(a.cow.network, bd)}) and account rent (${fmt(a.cow.ata, bd)}) come out of the tokens, ${fmtBps(bps(k.receive, k.shown))}.
+        Kamino's API does not return those costs, so its UI cannot show them. It should pass <code>quote.costs</code> through and show them as a separate "network fee / account rent" line.`)
+    }
   }
   if (a.kAll && a.cow) {
     const pre = bps(a.kAll.exp, a.cow.before), post = bps(a.kAll.exp, a.cow.after)
@@ -301,10 +331,10 @@ function explain(a, { buy, bd, slip }) {
       ? `Kamino's best route was ${venue} and it beats CoW on price before costs by ${fmtBps(pre)}. Solvers either did not reach that venue or priced it worse. That is for the solver team to look at, and no change to the display will close it.`
       : `Kamino's best route was ${venue}. On price before costs CoW is level with it or ahead, so liquidity is not the problem for this pair.`)
   }
-  if (a.kCowFixed && a.kAll) {
-    items.push(`<b>The costs-outside column puts both on the same footing.</b> It shows the CoW route as Kamino shows its own routes: expected amount, with fees and account rent outside it (${fmt(a.kCowFixed.shown, bd)} ${U}). Against Kamino (all routers) it is ${fmtBps(bps(a.kCowFixed.shown, a.kAll.exp))}.`)
+  if (a.kCow && a.kAll && a.kCow.basis !== 'min' && a.kCow.basis !== 'after') {
+    items.push(`<b>Ranking.</b> Kamino (via CoW) and Kamino (all routers) are now both before costs, so they compare directly: the CoW route is ${fmtBps(bps(a.kCow.shown, a.kAll.exp))} against Kamino's best route.`)
   }
-  items.push(`<b>Remaining fix for Kamino.</b> Either rank the CoW route by <code>buyAmount + quote.costs.networkFees + quote.costs.buyTokenAtaCosts</code> and show those costs as a separate line, or subtract the SOL fees and new-account rent of other routes from their comparison number, so every route is ranked on the same basis.`)
+  items.push(`<b>Remaining fix for Kamino.</b> Return CoW's <code>quote.costs</code> (network fee and account rent) in the swap response and show them in the UI as a separate line, so the Buy amount the user sees is not larger than what they receive.`)
   return `<ol class="explain">${items.map((i) => `<li>${i}</li>`).join('')}</ol>`
 }
 
@@ -312,8 +342,9 @@ function addHistory(a, { sell, buy, bd, slip }) {
   const ref = a.cow?.receive
   const tr = document.createElement('tr')
   tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${sym(sell)}→${sym(buy)}</td><td class="num">${slip}</td>
-    <td class="num">${fmt(ref, bd)}</td><td class="num">${fmt(a.kAll?.exp, bd)}</td><td class="num">${fmt(a.kCow?.shown, bd)}</td><td class="num">${fmt(a.kCowFixed?.shown, bd)}</td>
-    <td class="num">${fmtBps(bps(a.kCow?.shown, ref))}</td><td class="num">${fmtBps(bps(a.kAll?.exp, ref))}</td><td class="num">${fmtBps(bps(a.kCowFixed?.shown, a.kAll?.exp))}</td>`
+    <td class="num">${fmt(ref, bd)}</td><td class="num">${fmt(a.kAll?.exp, bd)}</td><td class="num">${fmt(a.kCow?.shown, bd)}</td><td class="num">${fmt(a.kCow?.receive, bd)}</td>
+    <td>${a.kCow?.basis ?? '—'}</td>
+    <td class="num">${fmtBps(bps(a.kCow?.receive, ref))}</td><td class="num">${fmtBps(bps(a.kAll?.exp, ref))}</td><td class="num">${fmtBps(bps(a.kCow?.shown, a.kAll?.exp))}</td>`
   $('hist').querySelector('tbody').prepend(tr)
 }
 
